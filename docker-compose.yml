@@ -1,0 +1,123 @@
+services:
+  app:
+    build: .
+    container_name: talentum-plus
+    ports:
+      - "8080:8080"
+    environment:
+      MONGO_URI: mongodb://mongo:27017/talentum
+      POSTGRES_DSN: postgresql://postgres:postgres@postgres:5432/talentum
+      NEO4J_URI: bolt://neo4j:7687
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://admin:admin@rabbitmq:5672/
+    depends_on:
+      mongo:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      neo4j-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - talentum-net
+
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./deploy/mongo/init.js:/docker-entrypoint-initdb.d/init.js:ro
+    environment:
+      MONGO_INITDB_DATABASE: talentum
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "mongodb://localhost:27017/talentum", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - talentum-net
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - talentum-net
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    ports:
+      - "5431:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: talentum
+    volumes:
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d talentum"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - talentum-net
+
+  neo4j:
+    image: neo4j:5
+    container_name: neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/neo4j1234
+      NEO4J_dbms_security_auth__minimum__password__length: 8
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u neo4j -p neo4j1234 \"RETURN 1;\""]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+    networks:
+      - talentum-net
+
+  neo4j-init:
+    image: neo4j:5
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c", "cypher-shell -a neo4j://neo4j:7687 -u neo4j -p neo4j1234 -f /init/bootstrap.cql"]
+    volumes:
+      - ./deploy/neo4j/bootstrap.cql:/init/bootstrap.cql:ro
+    networks:
+      - talentum-net
+
+  # NUEVO: RabbitMQ (Bus de Eventos)
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - talentum-net
+
+networks:
+  talentum-net:
+
+volumes:
+  neo4j-data:
