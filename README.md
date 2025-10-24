@@ -1,4 +1,4 @@
-Collecting workspace information# 🎓 Guía Completa del Backend - Sistema de Gestión de Empleo
+🎓 Guía Completa del Backend - Sistema de Gestión de Empleo
 
 ## 📖 Introducción para Principiantes
 
