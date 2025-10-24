@@ -15,6 +15,7 @@ import PublicarOferta from './pages/PublicarOferta';
 import DetalleOferta from './pages/DetalleOferta';
 import MisAplicaciones from './pages/MisAplicaciones';
 import MisSkills from './pages/MisSkills';
+import MiHistorialLaboral from './pages/MiHistorialLaboral';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import DashboardEmpresa from './pages/DashboardEmpresa';
@@ -45,7 +46,8 @@ function Sidebar() {
         { to: '/cursos', label: '📚 Catálogo Cursos' },
         { to: '/mis-cursos', label: '💻 Mis Cursos' },
         { to: '/mis-skills', label: '💼 Mis Skills' },
-        { to: '/ofertas', label: '� Ofertas' },
+        { to: '/mi-historial', label: '📋 Mi Historial' },
+        { to: '/ofertas', label: '💼 Ofertas' },
         { to: '/mis-aplicaciones', label: '📝 Mis Aplicaciones' },
         { to: '/red', label: '🌐 Red Contactos' }
       ],
@@ -216,6 +218,7 @@ function AppContent() {
             <Route path="/cursos" element={<ProtectedRoute><Cursos /></ProtectedRoute>} />
             <Route path="/mis-cursos" element={<ProtectedRoute><MisCursos /></ProtectedRoute>} />
             <Route path="/mis-skills" element={<ProtectedRoute requiredRole="candidato"><MisSkills /></ProtectedRoute>} />
+            <Route path="/mi-historial" element={<ProtectedRoute requiredRole="candidato"><MiHistorialLaboral /></ProtectedRoute>} />
             <Route path="/ofertas" element={<ProtectedRoute><Ofertas /></ProtectedRoute>} />
             <Route path="/publicar-oferta" element={<ProtectedRoute><PublicarOferta /></ProtectedRoute>} />
             <Route path="/ofertas/:id" element={<ProtectedRoute><DetalleOferta /></ProtectedRoute>} />

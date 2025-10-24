@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Body, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from src.models import Candidato, Proceso, Curso, Inscripcion, Empresa, OfertaLaboral, Entrevista, EvaluacionTecnica, SolicitudConexion
+from src.models import Candidato, Proceso, Curso, Inscripcion, Empresa, OfertaLaboral, Entrevista, EvaluacionTecnica, SolicitudConexion, ExperienciaLaboral
 from src.database import mongo_db, postgres_conn, neo4j_driver, redis_client
 from src.events import (
     sincronizar_candidato_creado, 
@@ -127,6 +127,207 @@ async def crear_candidato(candidato: Candidato):
     except Exception as e:
         print(f"❌ Error al crear candidato: {e}")
         raise HTTPException(status_code=500, detail=f"Error al crear candidato: {str(e)}")
+
+# --- Endpoints de Historial Laboral (deben estar ANTES de /candidatos/{email}) ---
+
+@app.get("/candidatos/{email}/historial-laboral")
+async def obtener_historial_laboral(email: str):
+    """
+    Obtiene el historial laboral completo del candidato desde MongoDB
+    """
+    try:
+        perfil = mongo_db.perfiles.find_one({"email": email}, {"historial_laboral": 1, "_id": 0})
+        
+        if not perfil:
+            return {"email": email, "historial_laboral": [], "total": 0}
+        
+        historial = perfil.get("historial_laboral", [])
+        
+        # Ordenar por fecha de inicio (más recientes primero)
+        historial_ordenado = sorted(
+            historial,
+            key=lambda x: x.get("fecha_inicio", ""),
+            reverse=True
+        )
+        
+        return {
+            "email": email,
+            "historial_laboral": historial_ordenado,
+            "total": len(historial_ordenado)
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener historial laboral: {str(e)}")
+
+@app.post("/candidatos/{email}/historial-laboral")
+async def agregar_experiencia_laboral(email: str, experiencia: dict = Body(...)):
+    """
+    Agrega una nueva experiencia laboral al historial del candidato
+    """
+    # Validar campos requeridos
+    if not experiencia.get("empresa") or not experiencia.get("puesto"):
+        raise HTTPException(status_code=400, detail="Empresa y puesto son campos obligatorios")
+    
+    if not experiencia.get("fecha_inicio"):
+        raise HTTPException(status_code=400, detail="Fecha de inicio es obligatoria")
+    
+    # Verificar que el usuario existe en PostgreSQL y es candidato
+    cursor = postgres_conn.cursor()
+    cursor.execute("SELECT nombre, rol FROM usuarios WHERE email = %s", (email,))
+    usuario = cursor.fetchone()
+    cursor.close()
+    
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    
+    if usuario[1] != 'candidato':
+        raise HTTPException(status_code=403, detail="Solo los candidatos pueden agregar experiencia laboral")
+    
+    try:
+        # Agregar fecha de creación y normalizar datos
+        experiencia_normalizada = {
+            "empresa": experiencia.get("empresa", "").strip(),
+            "puesto": experiencia.get("puesto", "").strip(),
+            "fecha_inicio": experiencia.get("fecha_inicio", "").strip(),
+            "fecha_fin": experiencia.get("fecha_fin", "").strip() if experiencia.get("fecha_fin") else None,
+            "descripcion": experiencia.get("descripcion", "").strip() if experiencia.get("descripcion") else "",
+            "tecnologias": experiencia.get("tecnologias", []),
+            "ubicacion": experiencia.get("ubicacion", "").strip() if experiencia.get("ubicacion") else "",
+            "actualmente_trabajando": experiencia.get("actualmente_trabajando", False),
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+        # Si actualmente está trabajando, fecha_fin debe ser null
+        if experiencia_normalizada["actualmente_trabajando"]:
+            experiencia_normalizada["fecha_fin"] = None
+        
+        # Agregar en MongoDB usando $push
+        result = mongo_db.perfiles.update_one(
+            {"email": email},
+            {
+                "$push": {"historial_laboral": experiencia_normalizada},
+                "$setOnInsert": {
+                    "nombre": usuario[0],
+                    "skills": [],
+                    "experiencia": "",
+                    "educacion": "",
+                    "created_at": datetime.utcnow()
+                }
+            },
+            upsert=True
+        )
+        
+        # Invalidar cache
+        redis_client.delete(f"perfil:{email}")
+        
+        return {
+            "success": True,
+            "mensaje": "Experiencia laboral agregada exitosamente",
+            "experiencia": experiencia_normalizada
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al agregar experiencia laboral: {str(e)}")
+
+@app.put("/candidatos/{email}/historial-laboral/{index}")
+async def actualizar_experiencia_laboral(email: str, index: int, experiencia: dict = Body(...)):
+    """
+    Actualiza una experiencia laboral específica del historial (por índice)
+    """
+    try:
+        perfil = mongo_db.perfiles.find_one({"email": email})
+        
+        if not perfil:
+            raise HTTPException(status_code=404, detail="Perfil no encontrado")
+        
+        historial = perfil.get("historial_laboral", [])
+        
+        if index < 0 or index >= len(historial):
+            raise HTTPException(status_code=404, detail="Índice de experiencia inválido")
+        
+        # Actualizar la experiencia en el índice especificado
+        experiencia_actualizada = {
+            "empresa": experiencia.get("empresa", "").strip(),
+            "puesto": experiencia.get("puesto", "").strip(),
+            "fecha_inicio": experiencia.get("fecha_inicio", "").strip(),
+            "fecha_fin": experiencia.get("fecha_fin", "").strip() if experiencia.get("fecha_fin") else None,
+            "descripcion": experiencia.get("descripcion", "").strip() if experiencia.get("descripcion") else "",
+            "tecnologias": experiencia.get("tecnologias", []),
+            "ubicacion": experiencia.get("ubicacion", "").strip() if experiencia.get("ubicacion") else "",
+            "actualmente_trabajando": experiencia.get("actualmente_trabajando", False),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        
+        if experiencia_actualizada["actualmente_trabajando"]:
+            experiencia_actualizada["fecha_fin"] = None
+        
+        # Mantener fecha de creación original
+        if "created_at" in historial[index]:
+            experiencia_actualizada["created_at"] = historial[index]["created_at"]
+        
+        historial[index] = experiencia_actualizada
+        
+        # Actualizar en MongoDB
+        mongo_db.perfiles.update_one(
+            {"email": email},
+            {"$set": {"historial_laboral": historial}}
+        )
+        
+        # Invalidar cache
+        redis_client.delete(f"perfil:{email}")
+        
+        return {
+            "success": True,
+            "mensaje": "Experiencia laboral actualizada exitosamente",
+            "experiencia": experiencia_actualizada
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al actualizar experiencia laboral: {str(e)}")
+
+@app.delete("/candidatos/{email}/historial-laboral/{index}")
+async def eliminar_experiencia_laboral(email: str, index: int):
+    """
+    Elimina una experiencia laboral específica del historial (por índice)
+    """
+    try:
+        perfil = mongo_db.perfiles.find_one({"email": email})
+        
+        if not perfil:
+            raise HTTPException(status_code=404, detail="Perfil no encontrado")
+        
+        historial = perfil.get("historial_laboral", [])
+        
+        if index < 0 or index >= len(historial):
+            raise HTTPException(status_code=404, detail="Índice de experiencia inválido")
+        
+        # Guardar referencia de la experiencia eliminada
+        experiencia_eliminada = historial[index]
+        
+        # Eliminar del array
+        historial.pop(index)
+        
+        # Actualizar en MongoDB
+        mongo_db.perfiles.update_one(
+            {"email": email},
+            {"$set": {"historial_laboral": historial}}
+        )
+        
+        # Invalidar cache
+        redis_client.delete(f"perfil:{email}")
+        
+        return {
+            "success": True,
+            "mensaje": "Experiencia laboral eliminada exitosamente",
+            "experiencia_eliminada": experiencia_eliminada
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al eliminar experiencia laboral: {str(e)}")
 
 @app.get("/candidatos/{email}")
 async def obtener_candidato(email: str):
@@ -310,13 +511,10 @@ async def eliminar_skill_candidato(email: str, skill: str):
     Elimina una skill del candidato en MongoDB (array) y Neo4j
     Solo el candidato puede eliminar sus propias skills
     """
-    from urllib.parse import unquote
-    
-    # Decodificar URL y limpiar espacios, pero NO cambiar formato
-    skill_decoded = unquote(skill).strip()
+    skill = skill.strip().title()  # Normalizar formato
     
     try:
-        # Eliminar en Neo4j (intentar con el formato exacto)
+        # Eliminar en Neo4j
         with neo4j_driver.session() as session:
             result = session.run(
                 """
@@ -325,14 +523,14 @@ async def eliminar_skill_candidato(email: str, skill: str):
                 RETURN count(r) AS deleted
                 """,
                 email=email,
-                skill=skill_decoded
+                skill=skill
             )
             deleted = result.single()["deleted"]
         
-        # Eliminar en MongoDB usando $pull (búsqueda exacta)
+        # Eliminar en MongoDB usando $pull
         mongo_result = mongo_db.perfiles.update_one(
             {"email": email},
-            {"$pull": {"skills": skill_decoded}}
+            {"$pull": {"skills": skill}}
         )
         
         if deleted == 0 and mongo_result.modified_count == 0:
@@ -341,7 +539,7 @@ async def eliminar_skill_candidato(email: str, skill: str):
         # Invalidar cache
         redis_client.delete(f"perfil:{email}")
         
-        return {"success": True, "skill": skill_decoded, "mensaje": f"Skill '{skill_decoded}' eliminada exitosamente"}
+        return {"success": True, "skill": skill, "mensaje": f"Skill '{skill}' eliminada exitosamente"}
     
     except HTTPException:
         raise
@@ -406,6 +604,8 @@ async def actualizar_seniority(email: str, seniority: str = Body(..., embed=True
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al actualizar seniority: {str(e)}")
+
+# ==================== FIN SENIORITY ====================
 
 @app.get("/candidatos")
 async def listar_candidatos(skill: str = None, seniority: str = None):
@@ -2122,29 +2322,6 @@ async def registrar_usuario(
     )
     usuario = cursor.fetchone()
     postgres_conn.commit()
-    
-    # Si es candidato, crear perfil en MongoDB y sincronizar
-    if rol == "candidato":
-        candidato_dict = {
-            "email": email,
-            "nombre": nombre,
-            "skills": [],
-            "seniority": None,
-            "experiencia": "",
-            "educacion": "",
-            "created_at": datetime.utcnow().isoformat()
-        }
-        
-        # Guardar en MongoDB
-        result_mongo = mongo_db.perfiles.insert_one(candidato_dict)
-        candidato_dict["_id"] = str(result_mongo.inserted_id)
-        
-        # Sincronizar con PostgreSQL y Neo4j
-        try:
-            await sincronizar_candidato_creado(candidato_dict)
-        except Exception as sync_error:
-            print(f"⚠️ Error en sincronización durante registro: {sync_error}")
-    
     cursor.close()
     
     # Generar token

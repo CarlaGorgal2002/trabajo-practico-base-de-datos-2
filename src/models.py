@@ -2,12 +2,23 @@ from pydantic import BaseModel, EmailStr
 from typing import List, Optional
 from datetime import datetime
 
+class ExperienciaLaboral(BaseModel):
+    empresa: str
+    puesto: str
+    fecha_inicio: str
+    fecha_fin: Optional[str] = None
+    descripcion: Optional[str] = None
+    tecnologias: List[str] = []
+    ubicacion: Optional[str] = None
+    actualmente_trabajando: bool = False
+
 class Candidato(BaseModel):
     nombre: str
     email: EmailStr
     seniority: Optional[str] = None
     skills: List[str] = []
     cursos: List[dict] = []
+    historial_laboral: List[dict] = []
 
 class Proceso(BaseModel):
     candidato_id: str
