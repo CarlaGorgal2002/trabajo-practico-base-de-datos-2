@@ -1010,7 +1010,9 @@ async def actualizar_progreso(inscripcion_id: str, progreso: float):
 async def rendir_examen(inscripcion_id: str):
     """
     Genera una nota aleatoria entre 1 y 10 para una inscripción completada.
-    Permite volver a rendir (genera nueva nota)
+    - Solo permite sacar nota igual o mayor a la anterior
+    - Aprueba con nota >= 4
+    - Si aprueba, agrega las skills del curso a MongoDB
     """
     import random
     
@@ -1030,8 +1032,15 @@ async def rendir_examen(inscripcion_id: str):
             detail="Debes completar el curso (100%) antes de rendir el examen"
         )
     
-    # Generar nota aleatoria entre 1 y 10
-    nota = random.randint(1, 10)
+    # Obtener nota anterior (si existe)
+    nota_anterior = inscripcion.get("nota_examen", 0)
+    
+    # Generar nota aleatoria entre la nota anterior y 10 (no puede sacar menos)
+    nota = random.randint(nota_anterior, 10)
+    
+    # Determinar si aprobó (nota >= 4)
+    aprobado = nota >= 4
+    estado_examen = "Aprobado" if aprobado else "Reprobado"
     
     # Actualizar en MongoDB
     result = mongo_db.inscripciones.update_one(
@@ -1039,21 +1048,57 @@ async def rendir_examen(inscripcion_id: str):
         {
             "$set": {
                 "nota_examen": nota,
-                "fecha_examen": datetime.utcnow()
+                "fecha_examen": datetime.utcnow(),
+                "aprobado": aprobado
             }
         }
     )
     
-    # Determinar si aprobó (nota >= 6)
-    aprobado = nota >= 6
-    estado_examen = "Aprobado" if aprobado else "Reprobado"
+    # Si aprobó, agregar las skills del curso al candidato
+    if aprobado:
+        # Obtener el curso para ver qué skills otorga
+        curso = mongo_db.cursos.find_one({"codigo": inscripcion["curso_codigo"]})
+        
+        if curso and "skills" in curso:
+            candidato_email = inscripcion["candidato_email"]
+            skills_curso = curso["skills"]
+            
+            # Agregar cada skill a la colección de skills del candidato
+            for skill_nombre in skills_curso:
+                # Verificar si ya tiene ese skill
+                skill_existente = mongo_db.skills.find_one({
+                    "candidato_email": candidato_email,
+                    "skill": skill_nombre
+                })
+                
+                if not skill_existente:
+                    # Agregar nuevo skill
+                    mongo_db.skills.insert_one({
+                        "candidato_email": candidato_email,
+                        "skill": skill_nombre,
+                        "nivel": "Intermedio",  # Nivel por defecto al completar curso
+                        "fuente": f"Curso: {curso.get('nombre', inscripcion['curso_codigo'])}",
+                        "fecha_obtencion": datetime.utcnow()
+                    })
+            
+            # Invalidar cache del perfil
+            redis_client.delete(f"perfil:{candidato_email}")
+            
+            mensaje_skills = f" ¡Ganaste {len(skills_curso)} nueva(s) skill(s): {', '.join(skills_curso)}!"
+        else:
+            mensaje_skills = ""
+    else:
+        mensaje_skills = ""
+    
+    mensaje_nota = f"Nota anterior: {nota_anterior}/10 → Nueva nota: {nota}/10" if nota_anterior > 0 else f"Primera nota: {nota}/10"
     
     return {
         "inscripcion_id": inscripcion_id,
         "nota": nota,
+        "nota_anterior": nota_anterior,
         "aprobado": aprobado,
         "estado": estado_examen,
-        "mensaje": f"¡Obtuviste {nota}/10! {estado_examen} ✨"
+        "mensaje": f"{mensaje_nota} - {estado_examen}! ✨{mensaje_skills}"
     }
 
 @app.put("/inscripciones/{inscripcion_id}/calificar")

@@ -1,14 +1,15 @@
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 import bcrypt
-from fastapi import HTTPException, Depends, status
+from fastapi import HTTPException, Depends, status, Header
 from fastapi.security import OAuth2PasswordBearer
+from typing import Optional
 
 SECRET_KEY = "tu-secreto-super-seguro-cambiar-en-produccion"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
 def hash_password(password: str) -> str:
     """Hashea una contraseña con bcrypt"""
@@ -31,10 +32,32 @@ def generar_token_jwt(email: str, rol: str) -> str:
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-def verificar_token(token: str = Depends(oauth2_scheme)):
-    """Verifica un JWT y retorna el payload"""
+def verificar_token(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Depends(oauth2_scheme)
+):
+    """Verifica un JWT desde Authorization header o OAuth2"""
+    # Intentar obtener token del header Authorization primero
+    token_str = None
+    
+    if authorization:
+        # Formato: "Bearer TOKEN"
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token_str = parts[1]
+    
+    # Si no hay en Authorization, usar el de OAuth2
+    if not token_str:
+        token_str = token
+    
+    if not token_str:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
+        )
+    
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token_str, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         rol: str = payload.get("rol")
         
@@ -45,10 +68,10 @@ def verificar_token(token: str = Depends(oauth2_scheme)):
             )
         
         return {"email": email, "rol": rol}
-    except JWTError:
+    except JWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token expirado o inválido"
+            detail=f"Token expirado o inválido: {str(e)}"
         )
 
 def get_current_user(token_data: dict = Depends(verificar_token)):

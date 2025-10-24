@@ -29,7 +29,8 @@ db.cursos.insertOne({
   categoria: "Backend",
   nivel: "Intermedio",
   recursos: ["https://video.com/py101", "https://pdf.com/py101.pdf"],
-  instructor: "Guido van Rossum"
+  instructor: "Guido van Rossum",
+  skills: ["Python", "Data Science", "Pandas", "NumPy"]
 });
 
 // NUEVO: Colección de inscripciones

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import axios from '../api/axios';
 
 export default function AdminCursos() {
   const [cursos, setCursos] = useState([]);
@@ -26,7 +26,7 @@ export default function AdminCursos() {
   const cargarCursos = async () => {
     setLoading(true);
     try {
-      const { data } = await axios.get('http://localhost:8080/cursos');
+      const { data } = await axios.get('/cursos');
       setCursos(data.cursos || []);
     } catch (error) {
       console.error('Error al cargar cursos:', error);
@@ -38,14 +38,25 @@ export default function AdminCursos() {
   const crearCurso = async (e) => {
     e.preventDefault();
     try {
+      // Generar código a partir del título (sin espacios, mayúsculas, max 10 chars)
+      const codigo = nuevoCurso.titulo
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '')
+        .substring(0, 10) + Math.floor(Math.random() * 100);
+
       const payload = {
-        ...nuevoCurso,
+        codigo: codigo,
+        nombre: nuevoCurso.titulo,
+        descripcion: nuevoCurso.descripcion,
         duracion_horas: parseInt(nuevoCurso.duracion_horas),
-        requisitos: nuevoCurso.requisitos.split(',').map(r => r.trim()).filter(Boolean),
-        temas: nuevoCurso.temas.split(',').map(t => t.trim()).filter(Boolean)
+        categoria: nuevoCurso.categoria,
+        nivel: nuevoCurso.nivel,
+        instructor: nuevoCurso.instructor,
+        recursos: nuevoCurso.requisitos.split(',').map(r => r.trim()).filter(Boolean),
+        skills: nuevoCurso.temas.split(',').map(t => t.trim()).filter(Boolean)
       };
 
-      await axios.post('http://localhost:8080/cursos', payload);
+      await axios.post('/cursos', payload);
       alert('✅ Curso creado exitosamente');
       setShowForm(false);
       setNuevoCurso({
@@ -60,7 +71,9 @@ export default function AdminCursos() {
       });
       cargarCursos();
     } catch (error) {
-      alert('❌ Error: ' + (error.response?.data?.detail || 'No se pudo crear el curso'));
+      console.error('Error completo:', error);
+      const errorMsg = error.response?.data?.detail || error.message || 'No se pudo crear el curso';
+      alert('❌ Error: ' + errorMsg);
     }
   };
 
@@ -71,7 +84,7 @@ export default function AdminCursos() {
     }
 
     try {
-      await axios.post('http://localhost:8080/inscripciones', {
+      await axios.post('/inscripciones', {
         candidato_email: candidatoEmail,
         curso_id: cursoId
       });
@@ -325,7 +338,7 @@ export default function AdminCursos() {
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                 <div style={{ flex: 1 }}>
-                  <h3 style={{ margin: '0 0 0.5rem' }}>{curso.titulo}</h3>
+                  <h3 style={{ margin: '0 0 0.5rem' }}>{curso.nombre}</h3>
                   <p style={{ color: '#94a3b8', margin: '0 0 1rem' }}>{curso.descripcion}</p>
                   
                   <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>

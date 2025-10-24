@@ -9,7 +9,6 @@ services:
       POSTGRES_DSN: postgresql://postgres:postgres@postgres:5432/talentum
       NEO4J_URI: bolt://neo4j:7687
       REDIS_URL: redis://redis:6379/0
-      RABBITMQ_URL: amqp://admin:admin@rabbitmq:5672/
     depends_on:
       mongo:
         condition: service_healthy
@@ -19,8 +18,6 @@ services:
         condition: service_started
       neo4j-init:
         condition: service_completed_successfully
-      rabbitmq:
-        condition: service_healthy
     networks:
       - talentum-net
 
@@ -95,24 +92,6 @@ services:
     entrypoint: ["/bin/bash", "-c", "cypher-shell -a neo4j://neo4j:7687 -u neo4j -p neo4j1234 -f /init/bootstrap.cql"]
     volumes:
       - ./deploy/neo4j/bootstrap.cql:/init/bootstrap.cql:ro
-    networks:
-      - talentum-net
-
-  # NUEVO: RabbitMQ (Bus de Eventos)
-  rabbitmq:
-    image: rabbitmq:3-management
-    container_name: rabbitmq
-    ports:
-      - "5672:5672"    # AMQP
-      - "15672:15672"  # Management UI
-    environment:
-      RABBITMQ_DEFAULT_USER: admin
-      RABBITMQ_DEFAULT_PASS: admin
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
       - talentum-net
 

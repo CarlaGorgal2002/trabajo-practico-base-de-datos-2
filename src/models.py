@@ -31,6 +31,7 @@ class Curso(BaseModel):
     nivel: str  # Principiante, Intermedio, Avanzado
     recursos: List[str]  # URLs a videos/PDFs
     instructor: str
+    skills: List[str] = []  # Skills que otorga al aprobar el curso
 
 class Inscripcion(BaseModel):
     candidato_email: EmailStr
