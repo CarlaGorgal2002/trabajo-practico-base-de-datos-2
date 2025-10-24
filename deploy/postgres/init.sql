@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS procesos (
 CREATE TABLE IF NOT EXISTS aplicaciones (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     candidato_email TEXT NOT NULL,
-    oferta_id UUID NOT NULL,
+    oferta_id TEXT NOT NULL,  -- ObjectId de MongoDB (string)
     estado TEXT NOT NULL DEFAULT 'Pendiente',
     fecha_aplicacion TIMESTAMPTZ DEFAULT now()
 );

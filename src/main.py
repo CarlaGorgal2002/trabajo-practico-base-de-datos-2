@@ -203,33 +203,47 @@ async def obtener_perfil_candidato(email: str):
 @app.get("/candidatos/{email}/skills")
 async def obtener_skills_candidato(email: str):
     """
-    Obtiene todas las skills de un candidato desde Neo4j
+    Obtiene todas las skills de un candidato desde MongoDB (array en perfil)
     """
     try:
-        with neo4j_driver.session() as session:
-            result = session.run(
-                """
-                MATCH (c:Usuario {email: $email})-[:TIENE_SKILL]->(s:Skill)
-                RETURN s.nombre AS skill
-                ORDER BY s.nombre
-                """,
-                email=email
+        # Buscar perfil en MongoDB
+        perfil = mongo_db.perfiles.find_one({"email": email}, {"skills": 1, "_id": 0})
+        
+        if not perfil:
+            # Si no existe perfil, intentar obtener desde Neo4j
+            with neo4j_driver.session() as session:
+                result = session.run(
+                    """
+                    MATCH (c:Usuario {email: $email})-[:TIENE_SKILL]->(s:Skill)
+                    RETURN s.nombre AS skill
+                    ORDER BY s.nombre
+                    """,
+                    email=email
+                )
+                skills = [record["skill"] for record in result]
+                return {"email": email, "skills": skills, "total": len(skills)}
+        
+        # Obtener skills del array
+        skills = perfil.get("skills", [])
+        
+        # Asegurar que sea una lista (migración de string a array)
+        if isinstance(skills, str):
+            skills = [s.strip() for s in skills.split(",") if s.strip()]
+            # Actualizar a formato array
+            mongo_db.perfiles.update_one(
+                {"email": email},
+                {"$set": {"skills": skills}}
             )
-            skills = [record["skill"] for record in result]
         
         return {"email": email, "skills": skills, "total": len(skills)}
+    
     except Exception as e:
-        # Si Neo4j falla, buscar en MongoDB (backup)
-        perfil = mongo_db.perfiles.find_one({"email": email}, {"skills": 1, "_id": 0})
-        if perfil and "skills" in perfil:
-            skills_list = perfil["skills"].split(", ") if isinstance(perfil["skills"], str) else perfil["skills"]
-            return {"email": email, "skills": skills_list, "total": len(skills_list)}
-        return {"email": email, "skills": [], "total": 0}
+        raise HTTPException(status_code=500, detail=f"Error al obtener skills: {str(e)}")
 
 @app.post("/candidatos/{email}/skills")
 async def agregar_skill_candidato(email: str, skill: str = Body(..., embed=True)):
     """
-    Agrega una nueva skill al candidato en Neo4j y MongoDB
+    Agrega una nueva skill al candidato en MongoDB (array en perfil) y Neo4j
     Solo el candidato puede agregar sus propias skills
     """
     skill = skill.strip().title()  # Normalizar formato
@@ -262,35 +276,30 @@ async def agregar_skill_candidato(email: str, skill: str = Body(..., embed=True)
                 skill=skill
             )
         
-        # Agregar en MongoDB (crear perfil si no existe)
-        candidato = mongo_db.perfiles.find_one({"email": email})
+        # Agregar en MongoDB usando $addToSet (evita duplicados automáticamente)
+        result = mongo_db.perfiles.update_one(
+            {"email": email},
+            {
+                "$addToSet": {"skills": skill},
+                "$setOnInsert": {
+                    "nombre": usuario[0],
+                    "experiencia": "",
+                    "educacion": "",
+                    "created_at": datetime.utcnow()
+                }
+            },
+            upsert=True  # Crea el perfil si no existe
+        )
         
-        if not candidato:
-            # Crear perfil básico si no existe
-            mongo_db.perfiles.insert_one({
-                "email": email,
-                "nombre": usuario[0],
-                "skills": skill,
-                "experiencia": "",
-                "educacion": "",
-                "created_at": datetime.utcnow()
-            })
-        else:
-            # Actualizar skills existentes
-            current_skills = candidato.get("skills", "")
-            if isinstance(current_skills, str):
-                skills_list = [s.strip() for s in current_skills.split(",") if s.strip()]
-            else:
-                skills_list = current_skills if isinstance(current_skills, list) else []
-            
-            if skill not in skills_list:
-                skills_list.append(skill)
-                mongo_db.perfiles.update_one(
-                    {"email": email},
-                    {"$set": {"skills": ", ".join(skills_list)}}
-                )
+        # Invalidar cache
+        redis_client.delete(f"perfil:{email}")
         
-        return {"success": True, "skill": skill, "mensaje": f"Skill '{skill}' agregada exitosamente"}
+        return {
+            "success": True,
+            "skill": skill,
+            "mensaje": f"Skill '{skill}' agregada exitosamente",
+            "created": result.upserted_id is not None
+        }
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al agregar skill: {str(e)}")
@@ -298,7 +307,7 @@ async def agregar_skill_candidato(email: str, skill: str = Body(..., embed=True)
 @app.delete("/candidatos/{email}/skills/{skill}")
 async def eliminar_skill_candidato(email: str, skill: str):
     """
-    Elimina una skill del candidato en Neo4j y MongoDB
+    Elimina una skill del candidato en MongoDB (array) y Neo4j
     Solo el candidato puede eliminar sus propias skills
     """
     skill = skill.strip().title()  # Normalizar formato
@@ -317,24 +326,17 @@ async def eliminar_skill_candidato(email: str, skill: str):
             )
             deleted = result.single()["deleted"]
         
-        if deleted == 0:
+        # Eliminar en MongoDB usando $pull
+        mongo_result = mongo_db.perfiles.update_one(
+            {"email": email},
+            {"$pull": {"skills": skill}}
+        )
+        
+        if deleted == 0 and mongo_result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Skill no encontrada en el perfil")
         
-        # Eliminar en MongoDB
-        candidato = mongo_db.perfiles.find_one({"email": email})
-        if candidato:
-            current_skills = candidato.get("skills", "")
-            if isinstance(current_skills, str):
-                skills_list = [s.strip() for s in current_skills.split(",") if s.strip()]
-            else:
-                skills_list = current_skills if isinstance(current_skills, list) else []
-            
-            if skill in skills_list:
-                skills_list.remove(skill)
-                mongo_db.perfiles.update_one(
-                    {"email": email},
-                    {"$set": {"skills": ", ".join(skills_list)}}
-                )
+        # Invalidar cache
+        redis_client.delete(f"perfil:{email}")
         
         return {"success": True, "skill": skill, "mensaje": f"Skill '{skill}' eliminada exitosamente"}
     
@@ -1063,28 +1065,38 @@ async def rendir_examen(inscripcion_id: str):
             candidato_email = inscripcion["candidato_email"]
             skills_curso = curso["skills"]
             
-            # Agregar cada skill a la colección de skills del candidato
-            for skill_nombre in skills_curso:
-                # Verificar si ya tiene ese skill
-                skill_existente = mongo_db.skills.find_one({
-                    "candidato_email": candidato_email,
-                    "skill": skill_nombre
-                })
+            # Agregar skills al perfil del candidato usando $addToSet (evita duplicados)
+            if skills_curso:
+                mongo_db.perfiles.update_one(
+                    {"email": candidato_email},
+                    {
+                        "$addToSet": {"skills": {"$each": skills_curso}},
+                        "$setOnInsert": {
+                            "created_at": datetime.utcnow()
+                        }
+                    },
+                    upsert=True
+                )
                 
-                if not skill_existente:
-                    # Agregar nuevo skill
-                    mongo_db.skills.insert_one({
-                        "candidato_email": candidato_email,
-                        "skill": skill_nombre,
-                        "nivel": "Intermedio",  # Nivel por defecto al completar curso
-                        "fuente": f"Curso: {curso.get('nombre', inscripcion['curso_codigo'])}",
-                        "fecha_obtencion": datetime.utcnow()
-                    })
-            
-            # Invalidar cache del perfil
-            redis_client.delete(f"perfil:{candidato_email}")
-            
-            mensaje_skills = f" ¡Ganaste {len(skills_curso)} nueva(s) skill(s): {', '.join(skills_curso)}!"
+                # También agregar en Neo4j
+                with neo4j_driver.session() as session:
+                    for skill_nombre in skills_curso:
+                        session.run(
+                            """
+                            MERGE (c:Usuario {email: $email})
+                            MERGE (s:Skill {nombre: $skill})
+                            MERGE (c)-[:TIENE_SKILL]->(s)
+                            """,
+                            email=candidato_email,
+                            skill=skill_nombre
+                        )
+                
+                # Invalidar cache del perfil
+                redis_client.delete(f"perfil:{candidato_email}")
+                
+                mensaje_skills = f" ¡Ganaste {len(skills_curso)} nueva(s) skill(s): {', '.join(skills_curso)}!"
+            else:
+                mensaje_skills = ""
         else:
             mensaje_skills = ""
     else:
@@ -1525,13 +1537,28 @@ async def aplicar_a_oferta(oferta_id: str, data: dict = Body(...)):
         postgres_conn.commit()
         cursor.close()
         
+        # Registrar evento en MongoDB (auditoría)
+        try:
+            mongo_db.historial_cambios.insert_one({
+                "tipo": "aplicacion_creada",
+                "candidato_email": candidato_email,
+                "oferta_id": oferta_id,
+                "aplicacion_id": str(aplicacion_id),
+                "timestamp": datetime.utcnow()
+            })
+        except Exception as e:
+            print(f"⚠️ Error al registrar evento: {e}")
+        
         # Crear relación en Neo4j (no bloquear si falla)
         try:
             with neo4j_driver.session() as session:
                 session.run(
                     """
-                    MATCH (c:Candidato {id: $candidato_email})
-                    MATCH (of:Oferta {id: $oferta_id})
+                    MERGE (c:Candidato {email: $candidato_email})
+                    ON CREATE SET c.email = $candidato_email
+                    WITH c
+                    MERGE (of:Oferta {id: $oferta_id})
+                    ON CREATE SET of.id = $oferta_id
                     MERGE (c)-[r:APLICA_A]->(of)
                     SET r.estado = 'Pendiente', r.fecha = datetime()
                     """,
@@ -1545,6 +1572,47 @@ async def aplicar_a_oferta(oferta_id: str, data: dict = Body(...)):
     except Exception as e:
         postgres_conn.rollback()
         raise HTTPException(status_code=500, detail=f"Error al crear aplicación: {str(e)}")
+
+@app.get("/candidatos/{email}/aplicaciones")
+async def obtener_aplicaciones_candidato(email: str):
+    """Obtiene todas las aplicaciones de un candidato"""
+    cursor = postgres_conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, oferta_id, estado, fecha_aplicacion 
+        FROM aplicaciones 
+        WHERE candidato_email = %s
+        ORDER BY fecha_aplicacion DESC
+        """,
+        (email,)
+    )
+    
+    aplicaciones = []
+    for row in cursor.fetchall():
+        app_id, oferta_id, estado, fecha = row
+        
+        # Obtener detalles de la oferta desde MongoDB
+        try:
+            oferta = mongo_db.ofertas.find_one({"_id": ObjectId(oferta_id)})
+            oferta_info = {
+                "titulo": oferta.get("titulo", "Oferta no encontrada"),
+                "empresa": oferta.get("empresa", ""),
+                "ubicacion": oferta.get("ubicacion", ""),
+                "modalidad": oferta.get("modalidad", "")
+            } if oferta else {"titulo": "Oferta no encontrada"}
+        except:
+            oferta_info = {"titulo": "Oferta no encontrada"}
+        
+        aplicaciones.append({
+            "id": str(app_id),
+            "oferta_id": oferta_id,
+            "estado": estado,
+            "fecha_aplicacion": str(fecha),
+            "oferta": oferta_info
+        })
+    
+    cursor.close()
+    return {"total": len(aplicaciones), "aplicaciones": aplicaciones}
 
 @app.get("/ofertas/{oferta_id}/matches")
 async def matching_oferta(oferta_id: str):

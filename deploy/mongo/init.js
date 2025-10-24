@@ -10,7 +10,7 @@ db.perfiles.updateOne(
     $set: {
       nombre: "Ada Lovelace",
       seniority: "Senior",
-      skills: ["python", "data-science", "ml"],
+      skills: ["Python", "Data Science", "Machine Learning"],  // Array en lugar de string
       cursos: [{ codigo: "ML101", progreso: 0.8 }]
     }
   },

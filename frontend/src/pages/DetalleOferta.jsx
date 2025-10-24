@@ -133,8 +133,8 @@ export default function DetalleOferta() {
           <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', color: '#94a3b8' }}>
             <span>📍 {oferta.ubicacion}</span>
             <span>💼 {oferta.modalidad}</span>
-            <span>📊 {oferta.seniority_minimo}+</span>
-            <span>💰 ${oferta.salario_min?.toLocaleString()} - ${oferta.salario_max?.toLocaleString()}</span>
+            <span>📊 {oferta.seniority_minimo ? `${oferta.seniority_minimo}+` : 'Sin experiencia previa'}</span>
+            <span>{oferta.salario ? `💰 $${oferta.salario.toLocaleString()}` : '💰 A convenir'}</span>
           </div>
         </div>
 
