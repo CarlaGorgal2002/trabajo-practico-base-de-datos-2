@@ -310,10 +310,13 @@ async def eliminar_skill_candidato(email: str, skill: str):
     Elimina una skill del candidato en MongoDB (array) y Neo4j
     Solo el candidato puede eliminar sus propias skills
     """
-    skill = skill.strip().title()  # Normalizar formato
+    from urllib.parse import unquote
+    
+    # Decodificar URL y limpiar espacios, pero NO cambiar formato
+    skill_decoded = unquote(skill).strip()
     
     try:
-        # Eliminar en Neo4j
+        # Eliminar en Neo4j (intentar con el formato exacto)
         with neo4j_driver.session() as session:
             result = session.run(
                 """
@@ -322,14 +325,14 @@ async def eliminar_skill_candidato(email: str, skill: str):
                 RETURN count(r) AS deleted
                 """,
                 email=email,
-                skill=skill
+                skill=skill_decoded
             )
             deleted = result.single()["deleted"]
         
-        # Eliminar en MongoDB usando $pull
+        # Eliminar en MongoDB usando $pull (búsqueda exacta)
         mongo_result = mongo_db.perfiles.update_one(
             {"email": email},
-            {"$pull": {"skills": skill}}
+            {"$pull": {"skills": skill_decoded}}
         )
         
         if deleted == 0 and mongo_result.modified_count == 0:
@@ -338,7 +341,7 @@ async def eliminar_skill_candidato(email: str, skill: str):
         # Invalidar cache
         redis_client.delete(f"perfil:{email}")
         
-        return {"success": True, "skill": skill, "mensaje": f"Skill '{skill}' eliminada exitosamente"}
+        return {"success": True, "skill": skill_decoded, "mensaje": f"Skill '{skill_decoded}' eliminada exitosamente"}
     
     except HTTPException:
         raise
@@ -2119,6 +2122,29 @@ async def registrar_usuario(
     )
     usuario = cursor.fetchone()
     postgres_conn.commit()
+    
+    # Si es candidato, crear perfil en MongoDB y sincronizar
+    if rol == "candidato":
+        candidato_dict = {
+            "email": email,
+            "nombre": nombre,
+            "skills": [],
+            "seniority": None,
+            "experiencia": "",
+            "educacion": "",
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+        # Guardar en MongoDB
+        result_mongo = mongo_db.perfiles.insert_one(candidato_dict)
+        candidato_dict["_id"] = str(result_mongo.inserted_id)
+        
+        # Sincronizar con PostgreSQL y Neo4j
+        try:
+            await sincronizar_candidato_creado(candidato_dict)
+        except Exception as sync_error:
+            print(f"⚠️ Error en sincronización durante registro: {sync_error}")
+    
     cursor.close()
     
     # Generar token
